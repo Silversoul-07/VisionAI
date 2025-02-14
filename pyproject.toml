@@ -1,0 +1,28 @@
+[project]
+name = "visionai"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Praveen Kumar",email = "praveenkumar.e2022@vitstudent.ac.in"}
+]
+readme = "README.md"
+requires-python = "3.11.11"
+dependencies = [
+    "fastapi[standard] (>=0.115.8,<0.116.0)",
+    "pymilvus (>=2.5.4,<3.0.0)",
+    "opencv-python (>=4.11.0.86,<5.0.0.0)",
+    "ultralytics (>=8.3.75,<9.0.0)",
+    "redis (>=5.2.1,<6.0.0)",
+    "sqlalchemy (>=2.0.38,<3.0.0)",
+    "insightface (>=0.7.3,<0.8.0)",
+    "torchreid (>=0.2.5,<0.3.0)",
+    "onnxruntime (>=1.20.1,<2.0.0)",
+    "gdown (>=5.2.0,<6.0.0)",
+    "tensorboard (>=2.19.0,<3.0.0)",
+    "psycopg2-binary (>=2.9.10,<3.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
