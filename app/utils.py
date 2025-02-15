@@ -35,8 +35,7 @@ def extract_features(image: np.ndarray, model) -> np.ndarray:
 def encode_frame(frame: np.ndarray) -> str:
     try:
         _, buffer = cv2.imencode('.jpg', frame)
-        image =  f"data:image/jpeg;base64,{base64.b64encode(buffer).decode('utf-8')}"
-        return image
+        return f"data:image/jpeg;base64,{base64.b64encode(buffer).decode('utf-8')}"
     except Exception as e:
         logger.error(f"Frame encoding error: {e}")
         return ""
