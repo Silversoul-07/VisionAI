@@ -14,3 +14,4 @@ redis_client = redis.Redis(
     port=REDIS_PORT, 
     decode_responses=True
 )
+
