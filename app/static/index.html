@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Surveillance Stream</title>
+</head>
+<body>
+    <img id="video-feed" style="max-width: 100%;">
+    <div id="detections"></div>
+
+    <script>
+        const ws = new WebSocket('ws://localhost:8000/ws/video_feed/camera1');
+        
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            document.getElementById('video-feed').src = data.result_image;
+            document.getElementById('detections').textContent = 
+                `Detected ${data.detections.length} objects`;
+        };
+        
+        ws.onerror = function(error) {
+            console.error('WebSocket error:', error);
+        };
+    </script>
+</body>
+</html>
