@@ -27,9 +27,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting up...")
     connections.connect("default", host='localhost', port='19530')
 
-    face_analyzer, head_detector, deep_sort, osnet = init_models()
+    detector, tracker = init_models()
     global analyser
-    analyser = PersonProcessor(face_analyzer, head_detector, deep_sort, osnet)
+    analyser = PersonProcessor(detector, tracker)
     logger.info("Models initialized successfully.")
 
     yield  # This is where the application runs
@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Shutdown logic
     logger.info("Shutting down...")
     connections.disconnect("default")
-    release_models(face_analyzer, head_detector, deep_sort, osnet)
+    release_models(detector, tracker)   
     logger.info("Models released successfully.")
 
 # Pass the lifespan manager to the FastAPI app
