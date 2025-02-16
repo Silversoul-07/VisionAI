@@ -39,3 +39,11 @@ def encode_frame(frame: np.ndarray) -> str:
     except Exception as e:
         logger.error(f"Frame encoding error: {e}")
         return ""
+    
+# provide code to extract initial frame from video and save to path
+def extract_initial_frame(video_path: str, save_path: str) -> None:
+    cap = cv2.VideoCapture(video_path)
+    ret, frame = cap.read()
+    if ret:
+        cv2.imwrite(save_path, frame)
+    cap.release()

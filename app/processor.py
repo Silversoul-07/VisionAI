@@ -234,3 +234,132 @@ class PersonProcessor:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
         
         return result_frame
+    
+    def yolo_predict(self, frame: np.ndarray) -> List[Dict]:
+        '''function to yolo predict an image and send only an array 
+        of detected people with: - id: Unique person ID - bbox'''
+        results = self.yolo(frame)[0]
+        predictions = []
+        
+        # Check if there are any detected boxes
+        if len(results.boxes) == 0:
+            return predictions
+        
+        # Convert detections to numpy array; expected shape: [x1, y1, x2, y2, confidence, class]
+        dets = results.boxes.data.cpu().numpy()
+        
+        person_id = 0
+        for det in dets:
+            # Check if the detected class is 'person' (typically class 0 for COCO)
+            if int(det[5]) != 0:
+                continue
+            
+            person_id += 1  # Unique ID for the detected person
+            bbox = [int(det[0]), int(det[1]), int(det[2]), int(det[3])]
+            predictions.append({
+                "id": person_id,
+                "bbox": bbox
+            })
+            
+        return predictions
+
+    def process_single_track(self, frame: np.ndarray, target_track_id: int, camera_id: str, timestamp: datetime) -> Tuple[Dict, str]:
+        '''Process a single track ID in the frame, ignoring all others
+        Returns: Tuple of (track_result, annotated_frame)
+        '''
+        try:
+            # Get all tracks first
+            tracked_results = self.track_predict(frame)
+            
+            # Find the target track
+            target_track = None
+            for track in tracked_results:
+                if track["track_id"] == target_track_id:
+                    target_track = track
+                    break
+                    
+            if target_track is None:
+                return {}, encode_frame(frame)
+                
+            # Extract features for single track
+            feature_box = np.array([target_track["bbox"]], dtype=np.float32)
+            try:
+                embedding = self.tracker.model.get_features(feature_box, frame)
+            except Exception as e:
+                logger.error(f"Feature extraction error: {e}")
+                return {}, encode_frame(frame)
+                
+            # Process single track with database
+            with Session() as session:
+                try:
+                    if embedding is not None and embedding.shape[1] == 512:
+                        embedding = embedding[0]  # Get first (only) embedding
+                        embedding = embedding.astype(np.float32)
+                        norm = np.linalg.norm(embedding)
+                        if norm > 0:
+                            embedding = embedding / norm
+                            
+                            # Database operations similar to _process_tracks but for single track
+                            session.begin_nested()
+                            
+                            # Search for matching embedding
+                            matches = self.milvus_collection.search(
+                                data=[embedding.tolist()],
+                                anns_field="embedding",
+                                param={"metric_type": "L2", "params": {"nprobe": 10}},
+                                limit=1
+                            )
+
+                            if matches and len(matches[0]) > 0 and matches[0][0].distance < self.similarity_threshold:
+                                person_id = matches[0][0].id
+                                person = session.query(Person).filter_by(person_id=person_id).first()
+                                if not person:
+                                    person = Person()
+                                    session.add(person)
+                                    session.flush()
+                                    person_id = person.person_id
+                            else:
+                                person = Person()
+                                session.add(person)
+                                session.flush()
+                                person_id = person.person_id
+                                
+                                # Store new embedding
+                                self.milvus_collection.insert([{
+                                    "embedding_id": str(person_id),
+                                    "embedding": embedding.tolist()
+                                }])
+                                
+                            # Create detection record
+                            detection = Detection(
+                                person_id=person_id,
+                                camera_id=camera_id,
+                                embedding_id=str(person_id),
+                                timestamp=timestamp
+                            )
+                            session.add(detection)
+                            session.commit()
+                            
+                            result = {
+                                "person_id": person_id,
+                                "track_id": target_track_id,
+                                "bbox": target_track["bbox"],
+                                "confidence": target_track["confidence"]
+                            }
+                            
+                            # Draw result on frame
+                            result_frame = self._draw_results(frame, [result])
+                            return result, encode_frame(result_frame)
+                            
+                except Exception as e:
+                    logger.error(f"Database operation error: {str(e)}")
+                    session.rollback()
+                    
+            return {}, encode_frame(frame)
+            
+        except Exception as e:
+            logger.error(f"Single track processing error: {e}")
+            return {}, encode_frame(frame)
+
+            
+        
