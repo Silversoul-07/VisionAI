@@ -1,6 +1,8 @@
 # main.py
 from contextlib import asynccontextmanager
+import random
 from typing import AsyncGenerator
+from unittest import result
 from uuid import UUID
 from fastapi import FastAPI, WebSocket, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +17,7 @@ from pymilvus import connections
 from .config import CAMERA_MAPPING
 from .ml_models import init_models, release_models
 from .processor import PersonProcessor
-from .utils import extract_initial_frame, resize_frame
+from .utils import extract_initial_frame
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -82,10 +84,8 @@ async def video_feed(websocket: WebSocket, track_id: str):
     # cap = cv2.VideoCapture(CAMERA_MAPPING.get(camera_id))
 
     # reads output from sample video
-    cap = cv2.VideoCapture("app/static/sample.mp4")
+    cap = cv2.VideoCapture("app/static/test.mp4")
 
-    print(track_id)
-    
     if not cap.isOpened():
         await websocket.close(code=1008, reason="Camera initialization failed")
         return
@@ -96,18 +96,29 @@ async def video_feed(websocket: WebSocket, track_id: str):
             if not ret:
                 break
             
-            frame = resize_frame(frame)
             timestamp = datetime.now()
-            detection, result_image = processor.track_person(
+            # detection, result_image = processor.track_person(
+            #     frame,
+            #     int(track_id),
+            #     "camera1",
+            #     timestamp
+            # )
+            detection, result_image = processor.track_all(
                 frame,
-                int(track_id),
                 "camera1",
                 timestamp
             )
+            print(len(detection))
             # detections has uuid convert to string
-            if detection and type(detection['person_id']) == UUID:
-                logger.info("UUID detected")
-                detection['person_id'] = str(detection['person_id'])
+            # if detection and type(detection['person_id']) == UUID:
+            #     logger.info("UUID detected")
+            #     detection['person_id'] = str(detection['person_id'])
+
+            for i in range(len(detection)):
+                if type(detection[i]['person_id']) == UUID:
+                    logger.info("UUID detected")
+                    detection[i]['person_id'] = str(detection[i]['person_id'])
+
             if result_image:
                 await websocket.send_json({
                     "detections": detection,

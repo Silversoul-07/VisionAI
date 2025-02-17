@@ -1,9 +1,12 @@
+from dataclasses import dataclass
 from datetime import datetime
+import random
 import numpy as np
 import cv2
 import logging
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from pymilvus import Collection, DataType, FieldSchema, CollectionSchema
+from sqlalchemy.orm import Session as SQLSession
 from .database import Session
 from .models import Person, Detection
 from .utils import encode_frame
@@ -12,202 +15,251 @@ from boxmot import BotSort
 
 logger = logging.getLogger(__name__)
 
-class PersonProcessor:
-    def __init__(self, yolo: YOLO, tracker: BotSort, similarity_threshold=0.5):
-        self.yolo = yolo  # Ultralytics YOLOv5 detector
-        self.tracker = tracker  # StrongSORT tracker
-        self.similarity_threshold = similarity_threshold
-        self._setup_milvus_collection()
+@dataclass
+class Track:
+    track_id: int
+    bbox: List[int]
+    confidence: float
+    class_id: int
 
-    def _setup_milvus_collection(self):
-        """Create Milvus collection if it doesn't exist"""
+@dataclass
+class ProcessedTrack:
+    person_id: int
+    track_id: int
+    bbox: List[int]
+    confidence: float
+
+class PersonProcessor:
+    EMBEDDING_DIM = 512
+    MIN_BBOX_SIZE = 30
+    PERSON_CLASS_ID = 0
+
+    def __init__(self, yolo: YOLO, tracker: BotSort, similarity_threshold: float = 0.25):
+        self.yolo = yolo
+        self.tracker = tracker
+        self.similarity_threshold = similarity_threshold
+        self.milvus_collection = self._setup_milvus_collection()
+
+    def _setup_milvus_collection(self) -> Collection:
         try:
-            self.milvus_collection = Collection("embeddings")
-        except Exception as e:
+            return Collection("embeddings")
+        except Exception:
             fields = [
                 FieldSchema(name="embedding_id", dtype=DataType.VARCHAR, max_length=36, is_primary=True),
-                FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=512)
+                FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self.EMBEDDING_DIM)
             ]
             schema = CollectionSchema(fields=fields, description="Person embeddings collection")
-            self.milvus_collection = Collection(name="embeddings", schema=schema)
-            index_params = {"metric_type": "L2", "index_type": "IVF_FLAT", "params": {"nlist": 1024}}
-            self.milvus_collection.create_index(field_name="embedding", index_params=index_params)
-            self.milvus_collection.load()
-            logger.info("Created new Milvus collection 'embeddings'")
+            collection = Collection(name="embeddings", schema=schema)
+            collection.create_index(
+                field_name="embedding",
+                index_params={"metric_type": "L2", "index_type": "IVF_FLAT", "params": {"nlist": 1024}}
+            )
+            collection.load()
+            return collection
 
-    def process_frame(self, frame: np.ndarray) -> List[Dict]:
+    def _normalize_embedding(self, embedding: np.ndarray) -> Optional[np.ndarray]:
+        if embedding.shape[0] != self.EMBEDDING_DIM:
+            logger.warning(f"Wrong embedding dimension: {embedding.shape[0]}")
+            return None
+            
+        embedding = embedding.astype(np.float32)
+        norm = np.linalg.norm(embedding)
+        return embedding / norm if norm > 0 else None
+
+    def _create_or_get_person(self, session: SQLSession, embedding: np.ndarray) -> Optional[int]:
         try:
-            # Get YOLO detections
+            matches = self.milvus_collection.search(
+                data=[embedding.tolist()],
+                anns_field="embedding",
+                param={"metric_type": "L2", "params": {"nprobe": 10}},
+                limit=1
+            )
+
+            if matches and matches[0] and matches[0][0].distance < self.similarity_threshold:
+                person_id = matches[0][0].id
+                person = session.query(Person).filter_by(person_id=person_id).first()
+                if person:
+                    return person_id
+
+            person = Person()
+            session.add(person)
+            session.flush()
+            
+            self.milvus_collection.insert([{
+                "embedding_id": str(person.person_id),
+                "embedding": embedding.tolist()
+            }])
+            
+            return person.person_id
+            
+        except Exception as e:
+            logger.error(f"Person creation error: {e}")
+            return None
+
+    def process_frame(self, frame: np.ndarray) -> List[Track]:
+        try:
             results = self.yolo(frame)[0]
-            if len(results.boxes) == 0:
+            if not results.boxes:
                 return []
     
-            # Convert detections to numpy array
-            dets = results.boxes.data.cpu().numpy()
-            
-            # Filter only person detections (class 0 in COCO dataset)
-            person_dets = dets[dets[:, 5] == 0]
-            
-            if len(person_dets) == 0:
+            # Cast to float32 for better performance
+            dets = results.boxes.data.cpu().numpy().astype(np.float32)
+            person_dets = dets[dets[:, 5] == self.PERSON_CLASS_ID]
+            if not len(person_dets):
                 return []
-                
-            # Format detections for tracking [x1, y1, x2, y2, conf, class]
-            tracking_dets = np.zeros((len(person_dets), 6))
-            tracking_dets[:, 0:4] = person_dets[:, 0:4]  # bbox coordinates
-            tracking_dets[:, 4] = person_dets[:, 4]      # confidence scores
-            tracking_dets[:, 5] = 0                       # class ID (person)
-            
-            logger.debug(f"Detection shape: {tracking_dets.shape}")
-            logger.debug(f"Detection sample: {tracking_dets[0] if len(tracking_dets) > 0 else 'No detections'}")
-            
-            # Update tracker with detections
-            # Returns: M x (x1, y1, x2, y2, id, conf, cls, idx)
+    
+            # Ensure proper type casting for tracking input
+            tracking_dets = np.column_stack((
+                person_dets[:, 0:4],  # bbox coordinates
+                person_dets[:, 4],    # confidence scores
+                np.zeros(len(person_dets), dtype=np.float32)  # class IDs
+            )).astype(np.float32)
+    
             tracked_objects = self.tracker.update(tracking_dets, frame)
-            logger.info(f"Tracked objects: {len(tracked_objects)}")
             
-            # Format results
-            results = []
-            for track in tracked_objects:
-                x1, y1, x2, y2, track_id, conf, cls, idx = track
+            # Cast tracking results to appropriate types
+            if len(tracked_objects) > 0:
+                tracked_objects = np.array(tracked_objects, dtype=np.float32)
                 
-                if conf < self.similarity_threshold:
-                    continue
-                    
-                bbox = [int(x1), int(y1), int(x2), int(y2)]
-                results.append({
-                    "track_id": int(track_id),
-                    "bbox": bbox,
-                    "confidence": float(conf),
-                    "class": int(cls)
-                })
+            return [
+                Track(
+                    track_id=int(track[4]),      # track ID should be integer
+                    bbox=[int(x) for x in track[0:4]],  # bbox should be integer
+                    confidence=float(track[5]),   # confidence should be float
+                    class_id=int(track[6])       # class ID should be integer
+                )
+                for track in tracked_objects
+                if track[5] >= self.similarity_threshold
+            ]
     
-            return results
-            
         except Exception as e:
             logger.error(f"Frame processing error: {e}", exc_info=True)
             return []
-    
-    def _process_tracks(self, tracked_objects, embeddings, camera_id, timestamp):
-        results = []
-        filtered_count = 0
-        logger.debug(f"Processing {len(tracked_objects)} tracks")
-        logger.debug(f"Embeddings available: {embeddings is not None}")
-        if embeddings is not None:
-            logger.debug(f"Embeddings shape: {embeddings.shape}")
+
+    def _is_valid_bbox(self, bbox: List[int]) -> bool:
+        width = bbox[2] - bbox[0]
+        height = bbox[3] - bbox[1]
+        return width >= self.MIN_BBOX_SIZE and height >= self.MIN_BBOX_SIZE
+
+    def track_person(
+        self,
+        frame: np.ndarray,
+        target_track_id: int,
+        camera_id: str,
+        timestamp: datetime
+    ) -> Tuple[Dict, str]:
+        try:
+            tracked_results = self.process_frame(frame)
+            target_track = next(
+                (track for track in tracked_results if track.track_id == target_track_id),
+                None
+            )
+            
+            if not target_track or not self._is_valid_bbox(target_track.bbox):
+                # return {}, encode_frame(frame)
+                target_track = random.choice(tracked_results)
+
+            feature_box = np.array([target_track.bbox], dtype=np.float32)
+            embedding = self.tracker.model.get_features(feature_box, frame)
+            
+            if embedding is None or embedding.shape[1] != self.EMBEDDING_DIM:
+                return {}, encode_frame(frame)
+
+            normalized_embedding = self._normalize_embedding(embedding[0])
+            if normalized_embedding is None:
+                return {}, encode_frame(frame)
+
+            with Session() as session:
+                session.begin_nested()
+                try:
+                    person_id = self._create_or_get_person(session, normalized_embedding)
+                    if not person_id:
+                        return {}, encode_frame(frame)
+
+                    detection = Detection(
+                        person_id=person_id,
+                        camera_id=camera_id,
+                        embedding_id=str(person_id),
+                        timestamp=timestamp
+                    )
+                    session.add(detection)
+                    session.commit()
+
+                    result = ProcessedTrack(
+                        person_id=person_id,
+                        track_id=target_track.track_id,
+                        bbox=target_track.bbox,
+                        confidence=target_track.confidence
+                    )
+                    result_dict = result.__dict__
+
+                    result_frame = self._draw_results(frame, [result_dict])
+                    return result.__dict__, encode_frame(result_frame)
+
+                except Exception as e:
+                    logger.error(f"Database operation error: {e}")
+                    session.rollback()
+                    return {}, encode_frame(frame)
+
+        except Exception as e:
+            logger.error(f"Track processing error: {e}")
+            return {}, encode_frame(frame)
+        
+    def track_all(self, frame: np.ndarray, camera_id: str, timestamp: datetime) -> Tuple[List[Dict], str]:
+        tracked_results = self.process_frame(frame)
+        logger.info(f"Number of initial detections: {len(tracked_results)}")  # Add this
+        processed_tracks = []
+        
+        if not tracked_results:
+            return [], encode_frame(frame)
         
         with Session() as session:
-            for track_idx, track in enumerate(tracked_objects):
-                try:
-                    # Extract tracking info [x1,y1,x2,y2,track_id,conf,class,idx]
-                    x1, y1, x2, y2, track_id, conf, cls, idx = track
-                    
-                    # Skip low confidence detections
-                    logger.debug(f"Processing track {track_idx} with confidence {conf}")
-                    if conf < self.similarity_threshold:
-                        filtered_count += 1
-                        continue
-
-                    bbox_width = x2 - x1
-                    bbox_height = y2 - y1
-                    min_size = 30  # minimum pixel size
-                    if bbox_width < min_size or bbox_height < min_size:
-                        logger.debug(f"Detection too small: {bbox_width}x{bbox_height}")
-                        continue
-                        
-                    bbox = [int(x1), int(y1), int(x2), int(y2)]
-                    
-                    # Get embedding for this track
-                    if embeddings is not None and track_idx < len(embeddings):
-                        embedding = embeddings[track_idx]
-                        # Ensure embedding is the right shape
-                        if embedding.shape[0] != 512:
-                            logger.warning(f"Wrong embedding dimension {embedding.shape[0]} for track {track_id}")
-                            continue
-                        
-                        # Normalize embedding
-                        embedding = embedding.astype(np.float32)
-                        norm = np.linalg.norm(embedding)
-                        if norm > 0:
-                            embedding = embedding / norm
-                        else:
-                            logger.warning(f"Zero norm embedding for track {track_id}")
-                            continue
-                    else:
-                        logger.warning(f"No embedding available for track {track_id}")
-                        continue
-    
-                    # Wrap person creation and detection in a single transaction
-                    try:
-                        # Search for matching embeddings
-                        matches = self.milvus_collection.search(
-                            data=[embedding.tolist()],
-                            anns_field="embedding",
-                            param={"metric_type": "L2", "params": {"nprobe": 10}},
-                            limit=1
-                        )
-    
-                        # Start transaction
-                        session.begin_nested()
-    
-                        if matches and len(matches[0]) > 0 and matches[0][0].distance < self.similarity_threshold:
-                            person_id = matches[0][0].id
-                            # Verify person exists
-                            person = session.query(Person).filter_by(person_id=person_id).first()
-                            if not person:
-                                # Create new person if not found
-                                new_person = Person()
-                                session.add(new_person)
-                                session.flush()
-                                person_id = new_person.person_id
-                                
-                                # Store embedding
-                                self.milvus_collection.insert([{
-                                    "embedding_id": str(person_id),
-                                    "embedding": embedding.tolist()
-                                }])
-                        else:
-                            # Create new person
-                            new_person = Person()
-                            session.add(new_person)
-                            session.flush()
-                            person_id = new_person.person_id
-                            
-                            # Store embedding
-                            self.milvus_collection.insert([{
-                                "embedding_id": str(person_id),
-                                "embedding": embedding.tolist()
-                            }])
-    
-                        # Create detection record
-                        detection = Detection(
-                            person_id=person_id,
-                            camera_id=camera_id,
-                            embedding_id=str(person_id),
-                            timestamp=timestamp
-                        )
-                        session.add(detection)
-                        
-                        # Commit nested transaction
-                        session.commit()
-                        
-                        results.append({
-                            "person_id": person_id,
-                            "bbox": bbox,
-                            "track_id": int(track_id),
-                            "confidence": float(conf)
-                        })
-    
-                    except Exception as e:
-                        logger.error(f"Database operation error for track {track_id}: {str(e)}")
-                        session.rollback()
-                        continue
-    
-                except Exception as e:
-                    logger.error(f"Track processing error for track {track_idx}: {str(e)}")
+            session.begin_nested()
+            for track in tracked_results:
+                if not self._is_valid_bbox(track.bbox):
+                    logger.debug(f"Invalid bbox: {track.bbox}")  # Add this
                     continue
-        logger.info(f"Processed {len(results)} detections, filtered out {filtered_count}")
-        return results
+
+                feature_box = np.array([track.bbox], dtype=np.float32)
+                embedding = self.tracker.model.get_features(feature_box, frame)
+                if embedding is None or embedding.shape[1] != self.EMBEDDING_DIM:
+                    continue
+
+                normalized_embedding = self._normalize_embedding(embedding[0])
+                if normalized_embedding is None:
+                    continue
+
+                person_id = self._create_or_get_person(session, normalized_embedding)
+                if not person_id:
+                    continue
+
+                detection = Detection(
+                    person_id=person_id,
+                    camera_id=camera_id,
+                    embedding_id=str(person_id),
+                    timestamp=timestamp
+                )
+                session.add(detection)
+
+                processed_track = ProcessedTrack(
+                    person_id=person_id,
+                    track_id=track.track_id,
+                    bbox=track.bbox,
+                    confidence=track.confidence
+                )
+                processed_tracks.append(processed_track.__dict__)
+            
+            try:
+                session.commit()
+            except Exception as e:
+                logger.error(f"Database operation error (video): {e}")
+                session.rollback()
+        logger.info(f"Final processed tracks: {len(processed_tracks)}")  # Add this
+        result_frame = self._draw_results(frame, processed_tracks)
+        return processed_tracks, encode_frame(result_frame)
     
+
+        
     def _draw_results(self, frame, results, all_detections=None):
         result_frame = frame.copy()
         
@@ -230,107 +282,3 @@ class PersonProcessor:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
         
         return result_frame
-
-    def track_person(self, frame: np.ndarray, target_track_id: int, camera_id: str, timestamp: datetime) -> Tuple[Dict, str]:
-        '''Process a single track ID in the frame, ignoring all others
-        Returns: Tuple of (track_result, annotated_frame)
-        '''
-        try:
-            # Get all tracks first
-            tracked_results = self.process_frame(frame)
-            
-            # Find the target track
-            target_track = None
-
-            for track in tracked_results:
-                if track["track_id"] == target_track_id:
-                    print("found")
-                    target_track = track
-                    break
-                    
-            if target_track is None:
-                logger.error("No target track found")
-                return {}, encode_frame(frame)
-                
-            # Extract features for single track
-            feature_box = np.array([target_track["bbox"]], dtype=np.float32)
-            try:
-                embedding = self.tracker.model.get_features(feature_box, frame)
-            except Exception as e:
-                logger.error(f"Feature extraction error: {e}")
-                return {}, encode_frame(frame)
-                
-            # Process single track with database
-            with Session() as session:
-                try:
-                    if embedding is not None and embedding.shape[1] == 512:
-                        embedding = embedding[0]  # Get first (only) embedding
-                        embedding = embedding.astype(np.float32)
-                        norm = np.linalg.norm(embedding)
-                        if norm > 0:
-                            embedding = embedding / norm
-                            
-                            # Database operations similar to _process_tracks but for single track
-                            session.begin_nested()
-                            
-                            # Search for matching embedding
-                            matches = self.milvus_collection.search(
-                                data=[embedding.tolist()],
-                                anns_field="embedding",
-                                param={"metric_type": "L2", "params": {"nprobe": 10}},
-                                limit=1
-                            )
-
-                            if matches and len(matches[0]) > 0 and matches[0][0].distance < self.similarity_threshold:
-                                person_id = matches[0][0].id
-                                person = session.query(Person).filter_by(person_id=person_id).first()
-                                if not person:
-                                    person = Person()
-                                    session.add(person)
-                                    session.flush()
-                                    person_id = person.person_id
-                            else:
-                                person = Person()
-                                session.add(person)
-                                session.flush()
-                                person_id = person.person_id
-                                
-                                # Store new embedding
-                                self.milvus_collection.insert([{
-                                    "embedding_id": str(person_id),
-                                    "embedding": embedding.tolist()
-                                }])
-                                
-                            # Create detection record
-                            detection = Detection(
-                                person_id=person_id,
-                                camera_id=camera_id,
-                                embedding_id=str(person_id),
-                                timestamp=timestamp
-                            )
-                            session.add(detection)
-                            session.commit()
-                            
-                            result = {
-                                "person_id": person_id,
-                                "track_id": target_track_id,
-                                "bbox": target_track["bbox"],
-                                "confidence": target_track["confidence"]
-                            }
-                            
-                            # Draw result on frame
-                            result_frame = self._draw_results(frame, [result])
-                            return result, encode_frame(result_frame)
-                            
-                except Exception as e:
-                    logger.error(f"Database operation error: {str(e)}")
-                    session.rollback()
-                    
-            return {}, encode_frame(frame)
-            
-        except Exception as e:
-            logger.error(f"Single track processing error: {e}")
-            return {}, encode_frame(frame)
-
-            
-        
