@@ -1,6 +1,7 @@
 # main.py
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+from uuid import UUID
 from fastapi import FastAPI, WebSocket, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
@@ -8,21 +9,20 @@ from fastapi.staticfiles import StaticFiles
 import asyncio
 import cv2
 from datetime import datetime
-import numpy as np
 
 # app/main.py
 from pymilvus import connections
 from .config import CAMERA_MAPPING
 from .ml_models import init_models, release_models
 from .processor import PersonProcessor
-from .utils import extract_initial_frame
+from .utils import extract_initial_frame, resize_frame
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-analyser: PersonProcessor = None
+processor: PersonProcessor = None
 # Define a lifespan manager using @asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -35,8 +35,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
 
     detector, tracker = init_models()
-    global analyser
-    analyser = PersonProcessor(detector, tracker)
+    global processor
+    processor = PersonProcessor(detector, tracker)
     logger.info("Models initialized successfully.")
 
     yield  # This is where the application runs
@@ -62,11 +62,15 @@ app.add_middleware(
 async def root():
     return RedirectResponse(url="/docs")
 
+@app.get("/test")
+async def sample_ui():
+    return FileResponse("app/static/index.html")
+
 @app.get("/yolo/predict")
 async def predict():
     path = "app/static/sample.jpg"
     frame = cv2.imread(path)
-    return analyser.yolo_predict(frame)
+    return processor.process_frame(frame)
 
 # uses websocket to stream video feed
 @app.websocket("/ws/track/{track_id}")
@@ -79,6 +83,8 @@ async def video_feed(websocket: WebSocket, track_id: str):
 
     # reads output from sample video
     cap = cv2.VideoCapture("app/static/sample.mp4")
+
+    print(track_id)
     
     if not cap.isOpened():
         await websocket.close(code=1008, reason="Camera initialization failed")
@@ -89,24 +95,26 @@ async def video_feed(websocket: WebSocket, track_id: str):
             ret, frame = cap.read()
             if not ret:
                 break
-                
+            
+            frame = resize_frame(frame)
             timestamp = datetime.now()
-            detections, result_image = analyser.process_single_track(
+            detection, result_image = processor.track_person(
                 frame,
-                track_id,
+                int(track_id),
                 "camera1",
                 timestamp
             )
             # detections has uuid convert to string
-            for detection in detections:
-                detection["person_id"] = str(detection["person_id"])
+            if detection and type(detection['person_id']) == UUID:
+                logger.info("UUID detected")
+                detection['person_id'] = str(detection['person_id'])
             if result_image:
                 await websocket.send_json({
-                    "detections": detections,
+                    "detections": detection,
                     "timestamp": timestamp.isoformat(),
                     "result_image": result_image
                 })
-            await asyncio.sleep(0.033)
+            await asyncio.sleep(0.03)   
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
     finally:

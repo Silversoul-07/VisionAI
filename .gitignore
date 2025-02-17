@@ -174,6 +174,5 @@ cython_debug/
 .pypirc
 
 #custom
-/dataset
-/volumes
-/models
+/models/*
+!/models/.gitkeep

@@ -1,0 +1,69 @@
+.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Person Tracking Demo</title>
+    <style>
+        .container {
+            display: flex;
+            gap: 20px;
+            padding: 20px;
+        }
+        .video-container {
+            flex: 1;
+        }
+        .detections-container {
+            flex: 1;
+            max-width: 300px;
+            padding: 10px;
+            background-color: #f5f5f5;
+            border-radius: 5px;
+        }
+        #videoFeed {
+            max-width: 100%;
+            border: 1px solid #ccc;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="video-container">
+            <h2>Video Feed</h2>
+            <img id="videoFeed" alt="Video Feed">
+        </div>
+        <div class="detections-container">
+            <h2>Detections</h2>
+            <pre id="detections"></pre>
+        </div>
+    </div>
+
+    <script>
+        const trackId = '1'; // You can change this ID as needed
+        const ws = new WebSocket(`ws://${window.location.hostname}:8000/ws/track/${trackId}`);
+        const videoFeed = document.getElementById('videoFeed');
+        const detectionsElement = document.getElementById('detections');
+
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            
+            // Update video frame
+            if (data.result_image) {
+                videoFeed.src = `${data.result_image}`;
+            }
+
+            // Display detections
+            detectionsElement.textContent = JSON.stringify(data.detections, null, 2);
+        };
+
+        ws.onclose = function(event) {
+            console.log('WebSocket connection closed:', event.reason);
+        };
+
+        ws.onerror = function(error) {
+            console.error('WebSocket error:', error);
+        };
+    </script>
+</body>
+</html>

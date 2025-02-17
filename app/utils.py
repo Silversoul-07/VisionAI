@@ -34,7 +34,8 @@ def extract_features(image: np.ndarray, model) -> np.ndarray:
 
 def encode_frame(frame: np.ndarray) -> str:
     try:
-        _, buffer = cv2.imencode('.jpg', frame)
+        encode_params = [cv2.IMWRITE_JPEG_QUALITY, 80]  # Reduce quality from default 95 to 80
+        _, buffer = cv2.imencode('.jpg', frame, encode_params)
         return f"data:image/jpeg;base64,{base64.b64encode(buffer).decode('utf-8')}"
     except Exception as e:
         logger.error(f"Frame encoding error: {e}")
@@ -47,3 +48,7 @@ def extract_initial_frame(video_path: str, save_path: str) -> None:
     if ret:
         cv2.imwrite(save_path, frame)
     cap.release()
+
+def resize_frame(frame, width=640):
+    height = int(frame.shape[0] * (width/frame.shape[1]))
+    return cv2.resize(frame, (width, height))

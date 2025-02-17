@@ -4,22 +4,18 @@ import cv2
 import logging
 from typing import List, Dict, Tuple
 from pymilvus import Collection, DataType, FieldSchema, CollectionSchema
-from torch import le
 from .database import Session
 from .models import Person, Detection
 from .utils import encode_frame
 from ultralytics import YOLO
-from boxmot import StrongSort
+from boxmot import BotSort
 
 logger = logging.getLogger(__name__)
 
 class PersonProcessor:
-    def __init__(self, yolo: YOLO, tracker: StrongSort, similarity_threshold=0.5):
+    def __init__(self, yolo: YOLO, tracker: BotSort, similarity_threshold=0.5):
         self.yolo = yolo  # Ultralytics YOLOv5 detector
         self.tracker = tracker  # StrongSORT tracker
-        self.tracker.max_iou_distance = 0.7    # Increase for more lenient matching
-        self.tracker.max_age = 30              # Keep tracks alive longer
-        self.tracker.n_init = 3                # Reduce frames needed to confirm track
         self.similarity_threshold = similarity_threshold
         self._setup_milvus_collection()
 
@@ -39,57 +35,57 @@ class PersonProcessor:
             self.milvus_collection.load()
             logger.info("Created new Milvus collection 'embeddings'")
 
-    def process_frame(self, frame: np.ndarray, camera_id: str, timestamp: datetime) -> Tuple[List[Dict], str]:
+    def process_frame(self, frame: np.ndarray) -> List[Dict]:
         try:
             # Get YOLO detections
             results = self.yolo(frame)[0]
             if len(results.boxes) == 0:
-                return [], encode_frame(frame)
+                return []
     
             # Convert detections to numpy array
             dets = results.boxes.data.cpu().numpy()
             
-            # Log confidence scores
-            for det in dets:
-                logger.info(f"YOLO detection confidence: {det[4]}")
+            # Filter only person detections (class 0 in COCO dataset)
+            person_dets = dets[dets[:, 5] == 0]
             
-            # Format detections for tracking [x1, y1, x2, y2, confidence, class]
-            tracking_dets = dets[:, [0, 1, 2, 3, 4, 5]]
-            logger.info(f"YOLO detections: {len(tracking_dets)}")
-    
-            # Get tracking results
+            if len(person_dets) == 0:
+                return []
+                
+            # Format detections for tracking [x1, y1, x2, y2, conf, class]
+            tracking_dets = np.zeros((len(person_dets), 6))
+            tracking_dets[:, 0:4] = person_dets[:, 0:4]  # bbox coordinates
+            tracking_dets[:, 4] = person_dets[:, 4]      # confidence scores
+            tracking_dets[:, 5] = 0                       # class ID (person)
+            
+            logger.debug(f"Detection shape: {tracking_dets.shape}")
+            logger.debug(f"Detection sample: {tracking_dets[0] if len(tracking_dets) > 0 else 'No detections'}")
+            
+            # Update tracker with detections
+            # Returns: M x (x1, y1, x2, y2, id, conf, cls, idx)
             tracked_objects = self.tracker.update(tracking_dets, frame)
             logger.info(f"Tracked objects: {len(tracked_objects)}")
             
-            # Log tracked object details
+            # Format results
+            results = []
             for track in tracked_objects:
-                    logger.info(f"Tracked object confidence: {track[5]}")
-            
-            if len(tracked_objects) == 0:
-                return [], encode_frame(frame)
+                x1, y1, x2, y2, track_id, conf, cls, idx = track
+                
+                if conf < self.similarity_threshold:
+                    continue
+                    
+                bbox = [int(x1), int(y1), int(x2), int(y2)]
+                results.append({
+                    "track_id": int(track_id),
+                    "bbox": bbox,
+                    "confidence": float(conf),
+                    "class": int(cls)
+                })
     
-            # Format bounding boxes for feature extraction
-            feature_boxes = []
-            for track in tracked_objects:
-                x1, y1, x2, y2 = track[:4]
-                feature_boxes.append([x1, y1, x2, y2])
-            feature_boxes = np.array(feature_boxes, dtype=np.float32)
+            return results
             
-            try:
-                # Get embeddings using tracked bounding boxes
-                embeddings = self.tracker.model.get_features(feature_boxes, frame)
-                logger.debug(f"Embeddings shape: {embeddings.shape if embeddings is not None else 'None'}")
-            except Exception as e:
-                logger.error(f"Feature extraction error: {e}")
-                embeddings = None
-    
-            # Process tracks and store in database
-            results = self._process_tracks(tracked_objects, embeddings, camera_id, timestamp)
-            result_frame = self._draw_results(frame, results, all_detections=dets)
-            return results, encode_frame(result_frame)
         except Exception as e:
             logger.error(f"Frame processing error: {e}", exc_info=True)
-            return [], encode_frame(frame)
+            return []
     
     def _process_tracks(self, tracked_objects, embeddings, camera_id, timestamp):
         results = []
@@ -234,51 +230,26 @@ class PersonProcessor:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
         
         return result_frame
-    
-    def yolo_predict(self, frame: np.ndarray) -> List[Dict]:
-        '''function to yolo predict an image and send only an array 
-        of detected people with: - id: Unique person ID - bbox'''
-        results = self.yolo(frame)[0]
-        predictions = []
-        
-        # Check if there are any detected boxes
-        if len(results.boxes) == 0:
-            return predictions
-        
-        # Convert detections to numpy array; expected shape: [x1, y1, x2, y2, confidence, class]
-        dets = results.boxes.data.cpu().numpy()
-        
-        person_id = 0
-        for det in dets:
-            # Check if the detected class is 'person' (typically class 0 for COCO)
-            if int(det[5]) != 0:
-                continue
-            
-            person_id += 1  # Unique ID for the detected person
-            bbox = [int(det[0]), int(det[1]), int(det[2]), int(det[3])]
-            predictions.append({
-                "id": person_id,
-                "bbox": bbox
-            })
-            
-        return predictions
 
-    def process_single_track(self, frame: np.ndarray, target_track_id: int, camera_id: str, timestamp: datetime) -> Tuple[Dict, str]:
+    def track_person(self, frame: np.ndarray, target_track_id: int, camera_id: str, timestamp: datetime) -> Tuple[Dict, str]:
         '''Process a single track ID in the frame, ignoring all others
         Returns: Tuple of (track_result, annotated_frame)
         '''
         try:
             # Get all tracks first
-            tracked_results = self.track_predict(frame)
+            tracked_results = self.process_frame(frame)
             
             # Find the target track
             target_track = None
+
             for track in tracked_results:
                 if track["track_id"] == target_track_id:
+                    print("found")
                     target_track = track
                     break
                     
             if target_track is None:
+                logger.error("No target track found")
                 return {}, encode_frame(frame)
                 
             # Extract features for single track
