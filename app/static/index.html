@@ -1,4 +1,7 @@
-.html
+index.html:
+
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -21,17 +24,28 @@
             background-color: #f5f5f5;
             border-radius: 5px;
         }
-        #videoFeed {
+        #videoFeed, #videoFeed1 {
             max-width: 100%;
             border: 1px solid #ccc;
+            position: relative;
+        }
+        .highlight {
+            position: absolute;
+            border: 2px solid red;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="video-container">
-            <h2>Video Feed</h2>
+            <h2>Video 1 - Tracking</h2>
             <img id="videoFeed" alt="Video Feed">
+        </div>
+        <div class="video-container">
+            <h2>Video 2 - Select ID</h2>
+            <img id="videoFeed1" alt="Video Feed">
+            <h3>Select ID to Track:</h3>
+            <select id="trackIdSelector"></select>
         </div>
         <div class="detections-container">
             <h2>Detections</h2>
@@ -40,30 +54,90 @@
     </div>
 
     <script>
-        const trackId = '1'; // You can change this ID as needed
-        const ws = new WebSocket(`ws://${window.location.hostname}:8000/ws/track/${trackId}`);
+        let selectedTrackId = null;
+        const ws1 = new WebSocket(`ws://${window.location.hostname}:8000/ws/track/video1`);
+        const ws2 = new WebSocket(`ws://${window.location.hostname}:8000/ws/id/9`);
+        
         const videoFeed = document.getElementById('videoFeed');
+        const videoFeed1 = document.getElementById('videoFeed1');
         const detectionsElement = document.getElementById('detections');
+        const trackIdSelector = document.getElementById('trackIdSelector');
 
-        ws.onmessage = function(event) {
+        // Track ID selection and handling
+        ws2.onmessage = function(event) {
             const data = JSON.parse(event.data);
             
-            // Update video frame
+            // Update Video 2 frame
+            if (data.result_image) {
+                videoFeed1.src = `${data.result_image}`;
+            }
+
+            // Update detections dropdown
+            trackIdSelector.innerHTML = ''; 
+            data.detections.forEach(detection => {
+                const option = document.createElement('option');
+                option.value = detection.track_id;
+                option.textContent = `ID: ${detection.track_id}`;
+                trackIdSelector.appendChild(option);
+            });
+            
+            // Set selectedTrackId when user selects an ID
+            trackIdSelector.onchange = function() {
+                selectedTrackId = trackIdSelector.value;
+                startTracking(selectedTrackId);
+            };
+        };
+
+        // Start tracking the selected ID
+        function startTracking(trackId) {
+            ws1.send(JSON.stringify({ track_id: trackId }));
+        }
+
+        // Handle WebSocket messages from ws1 (Video 1 tracking)
+        ws1.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            
+            // Update Video 1 frame
             if (data.result_image) {
                 videoFeed.src = `${data.result_image}`;
             }
 
-            // Display detections
-            detectionsElement.textContent = JSON.stringify(data.detections, null, 2);
+            // Filter and highlight the selected track ID
+            if (data.detections) {
+                // Find the detection that matches the selected track ID
+                const selectedDetection = data.detections.find(d => d.track_id == selectedTrackId);
+
+                // Clear previous highlight
+                clearHighlight();
+
+                if (selectedDetection) {
+                    // Highlight the selected detection
+                    highlightDetection(selectedDetection);
+                }
+
+                // Update detections display
+                detectionsElement.textContent = JSON.stringify(data.detections, null, 2);
+            }
         };
 
-        ws.onclose = function(event) {
-            console.log('WebSocket connection closed:', event.reason);
-        };
+        // Clear any previous highlights
+        function clearHighlight() {
+            const highlightElements = document.querySelectorAll('.highlight');
+            highlightElements.forEach(element => element.remove());
+        }
 
-        ws.onerror = function(error) {
-            console.error('WebSocket error:', error);
-        };
+        // Highlight the selected detection
+        function highlightDetection(detection) {
+            const bbox = detection.bbox; // [x1, y1, x2, y2]
+            const highlightDiv = document.createElement('div');
+            highlightDiv.classList.add('highlight');
+            highlightDiv.style.left = `${bbox[0]}px`;
+            highlightDiv.style.top = `${bbox[1]}px`;
+            highlightDiv.style.width = `${bbox[2] - bbox[0]}px`;
+            highlightDiv.style.height = `${bbox[3] - bbox[1]}px`;
+
+            videoFeed1.parentElement.appendChild(highlightDiv);
+        }
     </script>
 </body>
 </html>

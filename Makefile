@@ -1,14 +1,17 @@
 SHELL := /bin/bash
 
-.PHONY: start-ui start-app start-docker stop-docker ui-deps app-deps all clean help
+.PHONY: start-ui start-app start-docker stop-docker ui-deps app-deps all clean help docker-clean poetry-clean
 
 all: start-docker start-app
+
+clean: docker-clean poetry-clean
+	@echo "🧹 Cleaning all environments and dependencies..."
 
 start-ui:
 	cd ui && pnpm dev
 
 start-app:
-	poetry run uvicorn app.main:app --reload
+	poetry install --no-root && poetry run uvicorn app.main:app --reload
 
 start-docker:
 	sudo docker compose up -d
@@ -21,6 +24,15 @@ ui-deps:
 
 app-deps:
 	poetry install --no-root
+
+docker-clean:
+	@echo "🐳 Cleaning Docker resources..."
+	sudo docker compose down --rmi all --volumes --remove-orphans
+	sudo docker system prune -af
+
+poetry-clean:
+	@echo "📦 Cleaning Poetry environment and dependencies..."
+	poetry env remove --all
 
 help:
 	@echo "Available targets:"

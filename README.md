@@ -1,77 +1,37 @@
 # VisionAI
-Here's a step-by-step guide to set up your environment on **Windows**:  
 
----
+## **Project Description**
+VisionAI is an advanced AI-powered individual tracking system. It utilizes **YOLO11x** to detect all persons in a frame, the **BoT-SORT** algorithm to track individual motion, and **Re-ID using BoT-SORT** for re-identification.
 
-### **1. Install Prerequisites**  
+## **Demo Video**
+[Demo Video Placeholder]
 
-#### **1.1 Install Docker Desktop**  
-1. Download and install **Docker Desktop** from [Docker's official site](https://www.docker.com/products/docker-desktop/).  
-2. Enable **WSL 2 backend** (recommended) or Hyper-V during installation.  
-3. Ensure Docker is running by opening **PowerShell** and running:  
-   ```powershell
-   docker --version
-   ```
-4. Enable Docker Compose:  
-   ```powershell
-   docker-compose --version
-   ```
+## **Recommeded OS**
+- Linux
 
----
+## **Prerequisites**
+- CUDA Toolkit
+- NVIDIA Drivers
+- Docker
+- Poetry
 
-### **2. Install `pipx` and Poetry**  
+## **Setup Instructions**
+The `make cmd` command will:
+- Start Docker
+- Install FastAPI dependencies (for the first-time setup)
+- Start Docker Compose
+- Launch FastAPI
 
-#### **2.1 Install `pipx` (if not installed)**  
-```powershell
-python -m pip install --user pipx
-python -m pipx ensurepath
+Once running, the FastAPI service will be available at:
 ```
-**Restart PowerShell or Command Prompt for changes to take effect.**  
-
-#### **2.2 Install Poetry via `pipx`**  
-```powershell
-pipx install poetry
-```
-Check installation:  
-```powershell
-poetry --version
+http://localhost:8000
 ```
 
----
+## **Warning**
+⚠️ **Installing all required tools can consume a large amount of data.**
 
-### **3. Install Dependencies**  
-Navigate to your project folder:  
-```powershell
-cd path\to\your\project
+## **Cleanup**
+To remove installed Docker images, Poetry environment, and dependencies, run:
+```sh
+make clean
 ```
-Install dependencies **without installing the project itself**:  
-```powershell
-poetry install --no-root
-```
-
----
-
-### **4. Start Docker Compose**  
-Ensure you're in the project directory with the `docker-compose.yml` file, then run:  
-```powershell
-docker-compose up -d
-```
-This will start your Docker containers in detached mode (`-d`).
-
----
-
-### **5. Start the Uvicorn Server Using Poetry**  
-If using `poetry run`:  
-```powershell
-poetry run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-### **6. Verify Everything is Running**  
-- Open your FastAPI app in a browser:  
-  ```
-  http://localhost:8000
-  ```
-
----
-
-Let me know if you need additional setup details! 🚀

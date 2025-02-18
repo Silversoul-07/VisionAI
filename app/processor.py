@@ -156,8 +156,7 @@ class PersonProcessor:
             )
             
             if not target_track or not self._is_valid_bbox(target_track.bbox):
-                # return {}, encode_frame(frame)
-                target_track = random.choice(tracked_results)
+                return {}, encode_frame(frame)
 
             feature_box = np.array([target_track.bbox], dtype=np.float32)
             embedding = self.tracker.model.get_features(feature_box, frame)
