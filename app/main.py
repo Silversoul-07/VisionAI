@@ -78,7 +78,7 @@ async def video_feed(websocket: WebSocket, track_id: str):
     # cap = cv2.VideoCapture(CAMERA_MAPPING.get(camera_id))
 
     # reads output from sample video
-    cap = cv2.VideoCapture("app/static/sample.mp4")
+    cap = cv2.VideoCapture("app/static/test.mp4")
 
     if not cap.isOpened():
         await websocket.close(code=1008, reason="Camera initialization failed")
@@ -135,7 +135,7 @@ async def video_feed(websocket: WebSocket, track_id: str):
     # cap = cv2.VideoCapture(CAMERA_MAPPING.get(camera_id))
 
     # reads output from sample video
-    cap = cv2.VideoCapture("app/static/sample.mp4")
+    cap = cv2.VideoCapture("app/static/test.mp4")
 
     if not cap.isOpened():
         await websocket.close(code=1008, reason="Camera initialization failed")
