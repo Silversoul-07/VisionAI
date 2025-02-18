@@ -4,10 +4,7 @@
 VisionAI is an advanced AI-powered individual tracking system. It utilizes **YOLO11x** to detect all persons in a frame, the **BoT-SORT** algorithm to track individual motion, and **Re-ID using BoT-SORT** for re-identification.
 
 ## **Demo Video**
-<video width="730" height="auto" controls>
-  <source src="https://silversoul-07.github.io/video.mp4" type="video/mp4">
-  Your browser does not support the video tag.
-</video>
+![Demo Video](https://silversoul-07.github.io/video.mp4)
 
 ## **Recommeded OS**
 - Linux
