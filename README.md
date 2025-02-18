@@ -4,7 +4,7 @@
 VisionAI is an advanced AI-powered individual tracking system. It utilizes **YOLO11x** to detect all persons in a frame, the **BoT-SORT** algorithm to track individual motion, and **Re-ID using BoT-SORT** for re-identification.
 
 ## **Demo Video**
-<video src="demo/video.mp4" controls="controls" style="max-width: 730px;">
+<video src="./demo/video.mp4" controls="controls" style="max-width: 730px;">
 </video>
 
 ## **Recommeded OS**
@@ -17,7 +17,7 @@ VisionAI is an advanced AI-powered individual tracking system. It utilizes **YOL
 - Poetry
 
 ## **Setup Instructions**
-The `make cmd` command will:
+The `make` command will:
 - Start Docker
 - Install FastAPI dependencies (for the first-time setup)
 - Start Docker Compose
