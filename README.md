@@ -4,7 +4,8 @@
 VisionAI is an advanced AI-powered individual tracking system. It utilizes **YOLO11x** to detect all persons in a frame, the **BoT-SORT** algorithm to track individual motion, and **Re-ID using BoT-SORT** for re-identification.
 
 ## **Demo Video**
-[Demo Video Placeholder]
+<video src="demo/video.mp4" controls="controls" style="max-width: 730px;">
+</video>
 
 ## **Recommeded OS**
 - Linux
@@ -27,8 +28,8 @@ Once running, the FastAPI service will be available at:
 http://localhost:8000
 ```
 
-## **Warning**
-⚠️ **Installing all required tools can consume a large amount of data.**
+## **Caution**
+⚠️ **Installing all required tools can consume a large amount of data and storage**
 
 ## **Cleanup**
 To remove installed Docker images, Poetry environment, and dependencies, run:
